@@ -1,0 +1,9 @@
+*
+!.gitattributes
+!.gitignore
+!mpv.exe
+!portable_config/
+!portable_config/**
+!vs-plugins/
+!vs-plugins/**
+portable_config/_cache/**
