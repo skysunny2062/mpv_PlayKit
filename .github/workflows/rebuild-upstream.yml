@@ -1,0 +1,205 @@
+name: Rebuild Upstream
+
+on:
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Branch to update"
+        required: true
+        default: "upstream"
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full rsync
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve latest release assets
+        id: assets
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          def fetch_latest(repo: str) -> dict:
+              url = f"https://api.github.com/repos/{repo}/releases/latest"
+              req = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "User-Agent": "mpv-playkit-actions",
+                  },
+              )
+              with urllib.request.urlopen(req) as response:
+                  return json.load(response)
+
+          hooke = fetch_latest("hooke007/mpv_PlayKit")
+          shinchiro = fetch_latest("shinchiro/mpv-winbuild-cmake")
+
+          hooke_asset = next(
+              (
+                  asset for asset in hooke["assets"]
+                  if asset["name"].startswith("mpv-lazy-") and asset["name"].endswith(".exe")
+              ),
+              None,
+          )
+          if hooke_asset is None:
+              sys.exit("Could not find hooke007 .exe asset in latest release.")
+
+          shinchiro_asset = next(
+              (
+                  asset for asset in shinchiro["assets"]
+                  if asset["name"].startswith("mpv-x86_64-")
+                  and asset["name"].endswith(".7z")
+                  and "-dev-" not in asset["name"]
+                  and "-v3-" not in asset["name"]
+              ),
+              None,
+          )
+          if shinchiro_asset is None:
+              sys.exit("Could not find shinchiro non-dev non-v3 x86_64 asset in latest release.")
+
+          output_path = os.environ["GITHUB_OUTPUT"]
+          with open(output_path, "a", encoding="utf-8") as fh:
+              fh.write(f"hooke_tag={hooke['tag_name']}\n")
+              fh.write(f"hooke_label={hooke['name']}\n")
+              fh.write(f"hooke_asset={hooke_asset['name']}\n")
+              fh.write(f"shinchiro_tag={shinchiro['tag_name']}\n")
+              fh.write(f"shinchiro_label={shinchiro['tag_name']}\n")
+              fh.write(f"shinchiro_asset={shinchiro_asset['name']}\n")
+          PY
+
+      - name: Check whether target branch already has latest releases
+        id: state
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          target_branch = os.environ["TARGET_BRANCH"] or "upstream"
+          hooke_asset = os.environ["HOOKE_ASSET"]
+          shinchiro_asset = os.environ["SHINCHIRO_ASSET"]
+          github_output = os.environ["GITHUB_OUTPUT"]
+          github_env = os.environ["GITHUB_ENV"]
+
+          current = {}
+          try:
+              blob = subprocess.check_output(
+                  ["git", "show", f"origin/{target_branch}:.upstream-release-state.json"],
+                  text=True,
+              )
+              current = json.loads(blob)
+          except subprocess.CalledProcessError:
+              current = {}
+
+          skip = (
+              current.get("hooke_asset") == hooke_asset
+              and current.get("shinchiro_asset") == shinchiro_asset
+          )
+
+          skip_str = "true" if skip else "false"
+
+          with open(github_output, "a", encoding="utf-8") as fh:
+              fh.write(f"target_branch={target_branch}\n")
+              fh.write(f"skip_rebuild={skip_str}\n")
+
+          with open(github_env, "a", encoding="utf-8") as fh:
+              fh.write(f"STATE_TARGET_BRANCH={target_branch}\n")
+              fh.write(f"STATE_SKIP_REBUILD={skip_str}\n")
+
+          print(f"[DEBUG] Writing target_branch={target_branch}", flush=True)
+          print(f"[DEBUG] Writing skip_rebuild={skip_str}", flush=True)
+          PY
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch || 'upstream' }}
+          HOOKE_ASSET: ${{ steps.assets.outputs.hooke_asset }}
+          SHINCHIRO_ASSET: ${{ steps.assets.outputs.shinchiro_asset }}
+
+      - name: Debug state outputs
+        run: |
+          echo "target_branch='${{ steps.state.outputs.target_branch }}'"
+          echo "skip_rebuild='${{ steps.state.outputs.skip_rebuild }}'"
+          echo "STATE_TARGET_BRANCH='${STATE_TARGET_BRANCH}'"
+          echo "STATE_SKIP_REBUILD='${STATE_SKIP_REBUILD}'"
+
+      - name: Download release archives
+        if: env.STATE_SKIP_REBUILD != 'true'
+        run: |
+          mkdir -p _downloads
+          curl -L --fail \
+            --output "_downloads/${{ steps.assets.outputs.hooke_asset }}" \
+            "https://github.com/hooke007/mpv_PlayKit/releases/download/${{ steps.assets.outputs.hooke_tag }}/${{ steps.assets.outputs.hooke_asset }}"
+          curl -L --fail \
+            --output "_downloads/${{ steps.assets.outputs.shinchiro_asset }}" \
+            "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/${{ steps.assets.outputs.shinchiro_tag }}/${{ steps.assets.outputs.shinchiro_asset }}"
+
+      - name: Rebuild target branch
+        if: env.STATE_SKIP_REBUILD != 'true'
+        run: |
+          target_branch="${STATE_TARGET_BRANCH:-upstream}"
+          if [ -z "$target_branch" ]; then
+            target_branch="upstream"
+          fi
+          export UPSTREAM_BRANCH="$target_branch"
+          export HOOKE_TAG="${{ steps.assets.outputs.hooke_tag }}"
+          export HOOKE_LABEL="${{ steps.assets.outputs.hooke_label }}"
+          export SHINCHIRO_TAG="${{ steps.assets.outputs.shinchiro_tag }}"
+          export SHINCHIRO_LABEL="${{ steps.assets.outputs.shinchiro_label }}"
+          bash .github/scripts/rebuild-upstream-from-archives.sh \
+            "_downloads/${{ steps.assets.outputs.hooke_asset }}" \
+            "_downloads/${{ steps.assets.outputs.shinchiro_asset }}"
+
+      - name: Nothing to update
+        if: env.STATE_SKIP_REBUILD == 'true'
+        run: |
+          echo "已是最新版本，跳過重建。"
+
+      - name: Push branch
+        if: env.STATE_SKIP_REBUILD != 'true'
+        run: |
+          target_branch="${STATE_TARGET_BRANCH:-upstream}"
+          if [ -z "$target_branch" ]; then
+            target_branch="upstream"
+          fi
+          git push origin "$target_branch"
+
+      - name: Write workflow summary
+        if: always()
+        run: |
+          {
+            echo "## 上游重建摘要"
+            echo
+            echo "目標分支：${STATE_TARGET_BRANCH:-upstream}"
+            echo "hooke007：${{ steps.assets.outputs.hooke_label }} (${{ steps.assets.outputs.hooke_asset }})"
+            echo "shinchiro：${{ steps.assets.outputs.shinchiro_label }} (${{ steps.assets.outputs.shinchiro_asset }})"
+            if [ "${STATE_SKIP_REBUILD}" = "true" ]; then
+              echo "結果：跳過，已是最新版本"
+            else
+              echo "結果：已重建並提交"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
