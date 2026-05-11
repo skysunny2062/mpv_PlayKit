@@ -1,0 +1,40 @@
+* text=auto
+
+# Windows batch files work best with CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# mpv configs and scripts should stay LF to avoid parser issues.
+*.conf text eol=lf
+*.lua text eol=lf
+*.vpy text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.glsl text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.reg text eol=lf
+*.ass text eol=lf
+
+# script-opts is especially sensitive to CRLF.
+portable_config/script-opts/** text eol=lf
+portable_config/script-opts.conf text eol=lf
+
+# Binary assets must never be line-normalized.
+*.7z -text
+*.dll -text
+*.exe -text
+*.ico -text
+*.onnx -text
+*.otf -text
+*.pdf -text
+*.pyd -text
+*.ttf -text
+*.zip -text
+
+mpv.exe filter=lfs diff=lfs merge=lfs -text
